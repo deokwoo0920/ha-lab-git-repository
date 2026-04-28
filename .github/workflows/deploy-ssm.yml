@@ -34,7 +34,7 @@ jobs:
     # 3. 배포 버전 정보 index.html에 자동 주입
     - name: Inject version info
       run: |
-        DEPLOY_TIME=$(date '+%Y-%m-%d %H:%M KST' +'9 hours')
+        DEPLOY_TIME=$(date '+%Y-%m-%d %H:%M KST' -d '+9 hours')
         SHORT_SHA="${GITHUB_SHA::7}"
         sed -i "s/배포 버전: [^<]*/배포 버전: ${SHORT_SHA} (${DEPLOY_TIME})/" index.html || true
 
