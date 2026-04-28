@@ -41,7 +41,7 @@ jobs:
       - name: Upload to S3
         run: |
           zip -r deploy-${APP_VERSION}.zip . \
-            --exclude "*.git*" --exclude ".github/*" --exclude "tests/*"
+            --exclude "*.git*" --exclude ".github/*" 
           aws s3 cp deploy-${APP_VERSION}.zip \
             s3://${S3_BUCKET}/releases/deploy-${APP_VERSION}.zip
           aws s3 cp deploy-${APP_VERSION}.zip \
