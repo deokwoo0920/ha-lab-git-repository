@@ -1,0 +1,91 @@
+# .github/workflows/deploy-ssm.yml  (✅ YAML 파싱 검증 완료)
+name: Deploy via SSM (Free Tier)
+ 
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:           # 수동 실행 버튼
+ 
+env:
+  AWS_REGION:   ap-northeast-2
+  S3_BUCKET:    ha-lab-deploy-bucket-${{ secrets.AWS_ACCOUNT_ID }}
+  ASG_NAME:     ha-lab-asg
+  DEPLOY_DIR:   /var/www/html
+  APP_VERSION:  ${{ github.sha }}
+ 
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+ 
+      # ① 코드 체크아웃
+      - uses: actions/checkout@v4
+ 
+      # ② AWS 자격증명 설정
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+ 
+      # ③ 배포 버전 정보 index.html에 자동 주입
+      - name: Inject version info
+        run: |
+          DEPLOY_TIME=$(date '+%Y-%m-%d %H:%M KST' -d '+9 hours')
+          SHORT_SHA="${GITHUB_SHA::7}"
+          sed -i "s/배포 버전: [^<]*/배포 버전: ${SHORT_SHA} (${DEPLOY_TIME})/" index.html || true
+ 
+      # ④ S3에 배포 패키지 업로드
+      - name: Upload to S3
+        run: |
+          zip -r deploy-${APP_VERSION}.zip . \
+            --exclude "*.git*" --exclude ".github/*" --exclude "tests/*"
+          aws s3 cp deploy-${APP_VERSION}.zip \
+            s3://${S3_BUCKET}/releases/deploy-${APP_VERSION}.zip
+          aws s3 cp deploy-${APP_VERSION}.zip \
+            s3://${S3_BUCKET}/releases/deploy-latest.zip
+ 
+      # ⑤ ASG InService 인스턴스 ID 조회
+      - name: Get ASG instance IDs
+        id: get_instances
+        run: |
+          INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names "${ASG_NAME}" \
+            --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId' \
+            --output text | tr '\t' ' ')
+          echo "instance_ids=${INSTANCE_IDS}" >> $GITHUB_OUTPUT
+ 
+      # ⑥ SSM Run Command로 각 EC2에 순차 배포 (Rolling)
+      - name: Deploy via SSM
+        run: |
+          for INSTANCE_ID in ${{ steps.get_instances.outputs.instance_ids }}; do
+            echo "배포 시작: $INSTANCE_ID"
+            CMD_ID=$(aws ssm send-command \
+              --instance-ids "$INSTANCE_ID" \
+              --document-name "AWS-RunShellScript" \
+              --parameters commands=["\
+                aws s3 cp s3://${S3_BUCKET}/releases/deploy-${APP_VERSION}.zip /tmp/deploy.zip && \
+                unzip -o /tmp/deploy.zip -d ${DEPLOY_DIR} && \
+                nginx -t && systemctl reload nginx && \
+                curl -sf http://localhost/health\
+              "] \
+              --timeout-seconds 300 \
+              --query Command.CommandId --output text)
+            # 완료 대기 (최대 5분)
+            for i in $(seq 1 30); do
+              sleep 10
+              STATUS=$(aws ssm get-command-invocation \
+                --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+                --query Status --output text 2>/dev/null || echo Pending)
+              [ "$STATUS" = "Success" ] && break
+              [ "$STATUS" = "Failed" ] && exit 1
+            done
+            echo "✅ $INSTANCE_ID 배포 완료"
+          done
+ 
+      # ⑦ ALB 최종 응답 확인
+      - name: Verify via ALB
+        run: |
+          curl -sf --max-time 10 http://${{ secrets.ALB_DNS }} && echo '✅ ALB 정상'
