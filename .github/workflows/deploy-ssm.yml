@@ -70,7 +70,7 @@ jobs:
               aws s3 cp s3://${S3_BUCKET}/releases/deploy-${APP_VERSION}.zip /tmp/deploy.zip && \
               unzip -o /tmp/deploy.zip -d ${DEPLOY_DIR} && \
               nginx -t && systemctl reload nginx && \
-              curl -sf http://localhost\
+              curl -sf http://localhost/health\
             "] \
             --timeout-seconds 300 \
             --query Command.CommandId --output text)
